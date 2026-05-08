@@ -44,8 +44,8 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 	}
 
 	contentBlockIndex := 0
-	isTextActive := false
-	var currentToolCallID string
+	activeBlockType := "none"
+	activeToolIndex := -1
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -73,10 +73,20 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 
 		// Handle Text
 		if delta.Content != "" {
-			if !isTextActive {
+			if activeBlockType != "text" {
+				if activeBlockType != "none" {
+					// Stop previous block
+					stopEvent := types.AnthropicStreamEvent{
+						Type:  "content_block_stop",
+						Index: &contentBlockIndex,
+					}
+					sendStreamEvent(w, stopEvent, flusher)
+					contentBlockIndex++
+				}
+
 				// Start a text block
 				startEvent := types.AnthropicStreamEvent{
-					Type: "content_block_start",
+					Type:  "content_block_start",
 					Index: &contentBlockIndex,
 					ContentBlock: &types.AnthropicContentBlock{
 						Type: "text",
@@ -84,12 +94,12 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 					},
 				}
 				sendStreamEvent(w, startEvent, flusher)
-				isTextActive = true
+				activeBlockType = "text"
 			}
 
 			// Send text delta
 			deltaEvent := types.AnthropicStreamEvent{
-				Type: "content_block_delta",
+				Type:  "content_block_delta",
 				Index: &contentBlockIndex,
 				Delta: &types.AnthropicDelta{
 					Type: "text_delta",
@@ -102,26 +112,39 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 		// Handle Tool Calls
 		if len(delta.ToolCalls) > 0 {
 			for _, toolCall := range delta.ToolCalls {
-				if toolCall.ID != "" && toolCall.ID != currentToolCallID {
-					// Finish previous block (text or previous tool call)
-					if isTextActive || currentToolCallID != "" {
+				tcIndex := 0
+				if toolCall.Index != nil {
+					tcIndex = *toolCall.Index
+				}
+
+				if activeBlockType != "tool_use" || tcIndex != activeToolIndex {
+					// Finish previous block
+					if activeBlockType != "none" {
 						stopEvent := types.AnthropicStreamEvent{
-							Type: "content_block_stop",
+							Type:  "content_block_stop",
 							Index: &contentBlockIndex,
 						}
 						sendStreamEvent(w, stopEvent, flusher)
 						contentBlockIndex++
-						isTextActive = false
 					}
 
-					currentToolCallID = toolCall.ID
+					activeBlockType = "tool_use"
+					activeToolIndex = tcIndex
+
+					// Ensure we have an ID for the tool call. Some models might delay it,
+					// but usually it's in the first chunk.
+					tID := toolCall.ID
+					if tID == "" {
+						tID = fmt.Sprintf("call_%d", tcIndex)
+					}
+
 					// Start new tool_use block
 					startEvent := types.AnthropicStreamEvent{
-						Type: "content_block_start",
+						Type:  "content_block_start",
 						Index: &contentBlockIndex,
 						ContentBlock: &types.AnthropicContentBlock{
 							Type: "tool_use",
-							ID:   toolCall.ID,
+							ID:   tID,
 							Name: toolCall.Function.Name,
 						},
 					}
@@ -131,7 +154,7 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 				// Send input JSON delta
 				if toolCall.Function.Arguments != "" {
 					deltaEvent := types.AnthropicStreamEvent{
-						Type: "content_block_delta",
+						Type:  "content_block_delta",
 						Index: &contentBlockIndex,
 						Delta: &types.AnthropicDelta{
 							Type:        "input_json_delta",
@@ -145,15 +168,18 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 
 		// Handle Finish Reason
 		if choice.FinishReason != nil {
-			// Stop current block
-			stopEvent := types.AnthropicStreamEvent{
-				Type: "content_block_stop",
-				Index: &contentBlockIndex,
+			// Stop current block if active
+			if activeBlockType != "none" {
+				stopEvent := types.AnthropicStreamEvent{
+					Type:  "content_block_stop",
+					Index: &contentBlockIndex,
+				}
+				sendStreamEvent(w, stopEvent, flusher)
+				activeBlockType = "none"
 			}
-			sendStreamEvent(w, stopEvent, flusher)
 
 			stopReason := "end_turn"
-			if *choice.FinishReason == "tool_calls" {
+			if *choice.FinishReason == "tool_calls" || *choice.FinishReason == "function_call" {
 				stopReason = "tool_use"
 			} else if *choice.FinishReason == "length" {
 				stopReason = "max_tokens"
