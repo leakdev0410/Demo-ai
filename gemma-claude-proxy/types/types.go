@@ -109,14 +109,15 @@ type OpenAIFunctionDef struct {
 }
 
 type OpenAIToolCall struct {
-	ID       string         `json:"id"`
-	Type     string         `json:"type"`
-	Function OpenAIFunction `json:"function"`
+	Index    *int           `json:"index,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Type     string         `json:"type,omitempty"`
+	Function OpenAIFunction `json:"function,omitempty"`
 }
 
 type OpenAIFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type OpenAIResponse struct {
