@@ -14,7 +14,14 @@ func TranslateResponse(openAIResp *types.OpenAIResponse, originalModel string) (
 	choice := openAIResp.Choices[0]
 	message := choice.Message
 
-	var contentBlocks []types.AnthropicContentBlock
+	// Pre-allocate contentBlocks
+	capacity := 0
+	if message.Content != "" {
+		capacity++
+	}
+	capacity += len(message.ToolCalls)
+
+	contentBlocks := make([]types.AnthropicContentBlock, 0, capacity)
 
 	// Handle text content
 	if message.Content != "" {
@@ -30,9 +37,11 @@ func TranslateResponse(openAIResp *types.OpenAIResponse, originalModel string) (
 			// Try to unmarshal the arguments, Anthropic expects it as an object
 			var input json.RawMessage
 			if toolCall.Function.Arguments != "" {
-				input = json.RawMessage(toolCall.Function.Arguments)
+				// Avoid string -> []byte -> string conversion during marshal later by casting directly
+				// Actually json.RawMessage is just []byte
+				input = []byte(toolCall.Function.Arguments)
 			} else {
-				input = json.RawMessage("{}")
+				input = []byte("{}")
 			}
 
 			contentBlocks = append(contentBlocks, types.AnthropicContentBlock{
