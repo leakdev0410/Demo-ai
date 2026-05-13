@@ -2,7 +2,6 @@ package translator
 
 import(
 	"encoding/json"
-	"fmt"
 	"github.com/user/gemma-claude-proxy/types"
 )
 
@@ -24,11 +23,11 @@ func TranslateRequest(anthropicReq *types.AnthropicRequest, targetModel string) 
 			systemContent = sys
 		case []interface{}:
 			for _, blockIf := range sys {
-				blockBytes, err := json.Marshal(blockIf)
-				if err == nil {
-					var block types.AnthropicContentBlock
-					if err := json.Unmarshal(blockBytes, &block); err == nil && block.Type == "text" {
-						systemContent += block.Text
+				if blockMap, ok := blockIf.(map[string]interface{}); ok {
+					if blockType, _ := blockMap["type"].(string); blockType == "text" {
+						if text, ok := blockMap["text"].(string); ok {
+							systemContent += text
+						}
 					}
 				}
 			}
@@ -55,39 +54,42 @@ func TranslateRequest(anthropicReq *types.AnthropicRequest, targetModel string) 
 			var toolCalls []types.OpenAIToolCall
 
 			for _, blockIf := range content {
-				blockBytes, err := json.Marshal(blockIf)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal content block: %w", err)
-				}
+				if blockMap, ok := blockIf.(map[string]interface{}); ok {
+					blockType, _ := blockMap["type"].(string)
+					switch blockType {
+					case "text":
+						if text, ok := blockMap["text"].(string); ok {
+							textContent += text
+						}
+					case "tool_use":
+						id, _ := blockMap["id"].(string)
+						name, _ := blockMap["name"].(string)
+						var inputStr string
+						if input, ok := blockMap["input"]; ok {
+							inputBytes, _ := json.Marshal(input)
+							inputStr = string(inputBytes)
+						}
 
-				var block types.AnthropicContentBlock
-				if err := json.Unmarshal(blockBytes, &block); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal content block: %w", err)
-				}
+						toolCall := types.OpenAIToolCall{
+							ID:   id,
+							Type: "function",
+							Function: types.OpenAIFunction{
+								Name:      name,
+								Arguments: inputStr,
+							},
+						}
+						toolCalls = append(toolCalls, toolCall)
+					case "tool_result":
+						contentStr, _ := blockMap["content"].(string)
+						toolUseID, _ := blockMap["tool_use_id"].(string)
 
-				switch block.Type {
-				case "text":
-					textContent += block.Text
-				case "tool_use":
-					toolCall := types.OpenAIToolCall{
-						ID:   block.ID,
-						Type: "function",
-						Function: types.OpenAIFunction{
-							Name:      block.Name,
-							Arguments: string(block.Input),
-						},
+						toolResultMsg := types.OpenAIMessage{
+							Role:       "tool",
+							Content:    contentStr,
+							ToolCallID: toolUseID,
+						}
+						messages = append(messages, toolResultMsg)
 					}
-					toolCalls = append(toolCalls, toolCall)
-				case "tool_result":
-					// In OpenAI, tool results are separate messages with role="tool"
-					// We might need to split this message if there are multiple tool results
-					// or if it's mixed with other content.
-					toolResultMsg := types.OpenAIMessage{
-						Role:       "tool",
-						Content:    block.Content,
-						ToolCallID: block.ToolUseID,
-					}
-					messages = append(messages, toolResultMsg)
 				}
 			}
 

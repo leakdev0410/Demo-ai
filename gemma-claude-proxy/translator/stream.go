@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/user/gemma-claude-proxy/types"
 )
@@ -47,19 +46,22 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 	activeBlockType := "none"
 	activeToolIndex := -1
 
+	var oaiStreamResp types.OpenAIStreamResponse
 	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		lineBytes := scanner.Bytes()
+		if !bytes.HasPrefix(lineBytes, []byte("data: ")) {
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
+		data := bytes.TrimPrefix(lineBytes, []byte("data: "))
+		if bytes.Equal(data, []byte("[DONE]")) {
 			break
 		}
 
-		var oaiStreamResp types.OpenAIStreamResponse
-		if err := json.Unmarshal([]byte(data), &oaiStreamResp); err != nil {
+		// clear the struct to avoid stale data
+		oaiStreamResp = types.OpenAIStreamResponse{}
+
+		if err := json.Unmarshal(data, &oaiStreamResp); err != nil {
 			fmt.Printf("Error unmarshaling stream chunk: %v\n", err)
 			continue
 		}
@@ -209,21 +211,19 @@ func TranslateStream(w http.ResponseWriter, r io.Reader, originalModel string) e
 	return nil
 }
 
+
 func sendStreamEvent(w io.Writer, event types.AnthropicStreamEvent, flusher http.Flusher) error {
-	eventBytes, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-
 	// Anthropic SSE format
-	var buf bytes.Buffer
-	buf.WriteString("event: " + event.Type + "\n")
-	buf.WriteString("data: " + string(eventBytes) + "\n\n")
+	io.WriteString(w, "event: ")
+	io.WriteString(w, event.Type)
+	io.WriteString(w, "\ndata: ")
 
-	_, err = w.Write(buf.Bytes())
-	if err != nil {
+	enc := json.NewEncoder(w)
+	if err := enc.Encode(event); err != nil {
 		return err
 	}
+
+	io.WriteString(w, "\n")
 	flusher.Flush()
 	return nil
 }
